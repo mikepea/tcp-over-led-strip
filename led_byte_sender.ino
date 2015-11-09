@@ -46,12 +46,12 @@ Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUM_PIXELS, PIN, NEO_GRB + NEO_KHZ80
 
 #define TWO_BITS_PER_PIXEL 1
 //#define FOUR_BITS_PER_PIXEL 1
-#define BAUD_RATE 300
-#define STRIP_LATENCY_MS 1000
+#define BAUD_RATE 1200
+#define STRIP_LATENCY_MS 2000
 #define MAX_BUFFER 120
 
 #ifdef TWO_BITS_PER_PIXEL
-uint32_t colours[2] = { strip.Color(0, 0, 0xff), strip.Color(0xff, 0xff, 0xff) };
+uint32_t colours[2] = { strip.Color(0, 0, 0xff), strip.Color(0xff, 0xff, 0x00) };
 #endif
 #ifdef FOUR_BITS_PER_PIXEL
 uint32_t colours[16];
@@ -67,7 +67,8 @@ struct unsettableByte strip_bytes[MAX_BUFFER];
 uint8_t first_byte_buffer_pos = 0;
 uint8_t last_byte_buffer_pos = 0;
 
-uint8_t offset = 0;
+uint8_t bit_offset = 0;
+
 
 // INTERRUPT on OPTO PIN
 // read serial data if 'ready to receive'
@@ -76,22 +77,26 @@ uint8_t offset = 0;
 //
 
 void setup() {
+  Serial.begin(BAUD_RATE);
   strip.begin();
   strip.show(); // Initialize all pixels to 'off'
 }
 
-long last_byte_read_millis;
-long last_strip_update_millis;
+long last_byte_read_millis = 0;
+long last_strip_update_millis = 0;
 
-void populateNextByte() {
+void populateSerialBuffer() {
   // buffer has not been read
-  if ( incoming_byte.set == true )
+  if ( incoming_byte.set == true ) {
+    //Serial.println("Byte already set!");
     return;
+  }
 
   // we can read another byte
   if (Serial.available() > 0) {
     incoming_byte.value = Serial.read();
     incoming_byte.set = true;
+    //Serial.println(incoming_byte.value);
   }
 
 }
@@ -115,7 +120,10 @@ void updateStripBytes(bool set, uint8_t value) {
 }
 
 bool byteNeededOnStrip() {
-  return true; // TODO: how do we know that we need a new byte?
+  if ( bit_offset > 11 )
+    return true;
+  else
+    return false;
 }
 
 bool timeToRefreshStrip() {
@@ -128,8 +136,6 @@ bool timeToRefreshStrip() {
   }
 }
 
-uint8_t bit_offset = 0;
-
 void updateStrip() {
   // 'first' byte is coming onto strip
   // 'last' byte is exiting strip
@@ -138,7 +144,7 @@ void updateStrip() {
   // at bit_offset == 1, MSB first bit of first byte enters strip
   //
   // each 'byte' is 11 pixels: 8 pixels data, 3 pixels trailing blank
-  for (uint16_t i=strip.numPixels()-1; i>=0; i--) {
+  for (uint16_t i=strip.numPixels(); i>0; i--) {
     // REVELATION: We only need to know what the first pixel should be!
     //  - rest just shift along with getPixelColor()
     //  - but we need to set in reverse.
@@ -157,30 +163,36 @@ void updateStrip() {
     //     9: i==0 => blank
     //    10: i==0 => blank
     uint8_t val = strip_bytes[first_byte_buffer_pos].value;
-    if ( i == 0 ) {
-      if ( bit_offset == 0 || bit_offset == 9 || bit_offset == 10 ) {
-        strip.setPixelColor(i, 0); // blank
+    if ( i-1 == 0 ) {
+      if ( bit_offset == 0 || bit_offset >= 9 ) {
+        strip.setPixelColor(i-1, 0); // blank
       } else {
-        uint8_t bit_to_read = (8 - offset);
+        uint8_t bit_to_read = (8 - bit_offset);
+        strip.setPixelColor(i-1, colours[1]);
         if ( strip_bytes[first_byte_buffer_pos].set ) {
-          strip.setPixelColor(i, colours[bitRead(val, bit_to_read)]);
+          strip.setPixelColor(i-1, colours[bitRead(val, bit_to_read)]);
         } else {
-          strip.setPixelColor(i, 0);
+          strip.setPixelColor(i-1, 0);
         }
       }
     } else {
-      strip.setPixelColor(i, strip.getPixelColor(i-1)); // hopefully not slow :/
+      strip.setPixelColor(i-1, strip.getPixelColor(i-2)); // hopefully not slow :/
     }
-
+    //Serial.print("i: "); Serial.println(i);
   }
+  strip.show();
+  bit_offset++;
+  //Serial.print("bit_offset: "); Serial.println(bit_offset);
 }
 
 void loop() {
-  populateNextByte();
+  //Serial.println("LoopStart");
+  populateSerialBuffer();
   if ( byteNeededOnStrip() ) {
     if ( incoming_byte.set ) {
       updateStripBytes(true, incoming_byte.value);
       incoming_byte.set = false;
+      bit_offset=0; // TODO uuurm
     } else {
       updateStripBytes(false, 0);
     }
@@ -188,6 +200,8 @@ void loop() {
   if ( timeToRefreshStrip() ) {
     updateStrip();
   }
+  //Serial.print("millis: "); Serial.println(millis());
+  //Serial.println("LoopEnd");
 
 }
 
