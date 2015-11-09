@@ -20,156 +20,174 @@ Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUM_PIXELS, PIN, NEO_GRB + NEO_KHZ80
 // and minimize distance between Arduino and first pixel.  Avoid connecting
 // on a live circuit...if you must, connect GND first.
 
+// SUPPOSE we have 1 pixel per 4 bits: 16 colours, plus blank for 'no data'
+//   - F - white (stands out, looks 'high')
+//   - 1-E: mix (any colours that look 'different' from white+blue)
+//        - 0x7E should be distinctive (PPP)
+//   - 0 - blue (stands out, looks 'low')
+// THEN we have NUM_PIXELS * 4 bits per strip
+//  which at 240 pixels: 960 bits per strip: or ~3s latency for 300 baud
+//                                           or ~0.8s for 1200 baud
+//   - 120 bytes on strip
+//  which at 120 pixels: 480 bits per strip: or ~1.5s latency for 300 baud
+//                                           or ~0.4s for 1200 baud
+//   - 60 bytes on strip
+
+// Also could have a 'binary' mode:
+//  1 pixel per bit:
+//  240 pixels: 240 pixels per strip: 0.8s latency per strip
+//   - 30 bytes on strip
+//  120 pixels: 120 pixels per strip: 0.4s latency per strip
+//   - 15 bytes on strip
+// could 'colour' key bits/bytes:
+//  * PPP headers; 0x00; 0xFF; 0x7E
+//  * HDLC/PPP bit-stuffed packets? -- 111110 in data stream
+//
+
+#define TWO_BITS_PER_PIXEL 1
+//#define FOUR_BITS_PER_PIXEL 1
+#define BAUD_RATE 300
+#define STRIP_LATENCY_MS 1000
+#define MAX_BUFFER 120
+
+#ifdef TWO_BITS_PER_PIXEL
+uint32_t colours[2] = { strip.Color(0, 0, 0xff), strip.Color(0xff, 0xff, 0xff) };
+#endif
+#ifdef FOUR_BITS_PER_PIXEL
+uint32_t colours[16];
+#endif
+
+struct unsettableByte {
+  bool set;
+  uint8_t value;
+} incoming_byte;
+
+const int ms_per_pixel_move = STRIP_LATENCY_MS / NUM_PIXELS; // for 1s latency
+struct unsettableByte strip_bytes[MAX_BUFFER];
+uint8_t first_byte_buffer_pos = 0;
+uint8_t last_byte_buffer_pos = 0;
+
+uint8_t offset = 0;
+
+// INTERRUPT on OPTO PIN
+// read serial data if 'ready to receive'
+// throw new byte onto end of 'displayed buffer'
+//   - displayed buffer ==
+//
+
 void setup() {
   strip.begin();
   strip.show(); // Initialize all pixels to 'off'
 }
 
-void loop() {
-          if (Serial.available() > 0) {
-                // read the incoming byte:
-                incomingByte = Serial.read();
+long last_byte_read_millis;
+long last_strip_update_millis;
 
-                // say what you got:
-                Serial.print("I received: ");
-                Serial.println(incomingByte, DEC);
-       }
-        
-  // Some example procedures showing how to display to the pixels:
-  //colorWipe(strip.Color(255, 0, 0), 50); // Red
-  //colorWipe(strip.Color(0, 255, 0), 50); // Green
-  //colorWipe(strip.Color(0, 0, 255), 50); // Blue
-  // Send a theater pixel chase in...
-  //theaterChase(strip.Color(127, 127, 127), 50); // White
-  //theaterChase(strip.Color(127, 0, 0), 50); // Red
-  //theaterChase(strip.Color(0, 0, 127), 50); // Blue
+void populateNextByte() {
+  // buffer has not been read
+  if ( incoming_byte.set == true )
+    return;
 
-  pixelRun(1);
-  //rainbow(20);
-  //rainbowCycle(1);
-  //theaterChaseRainbow(50);
-}
-
-// Fill the dots one after the other with a color
-void colorWipe(uint32_t c, uint8_t wait) {
-  for(uint16_t i=0; i<strip.numPixels(); i++) {
-    strip.setPixelColor(i, c);
-    strip.show();
-    delay(wait);
-  }
-}
-
-void byteSender(uint8_t b, uint8_t wait) { 
-  uint16_t i, j;
-
-  for(j=0; j<strip.numPixels(); j++) {
-    for(j=0; j<strip.numPixels(); j++) {
-      strip.setPixelColor(j, 0);
-    }
-  }
-
-  for(j=0; j<strip.numPixels(); j++) {
-    for(i=0; i<strip.numPixels(); i++) {
-      if ( i == j ) {
-        strip.setPixelColor(i, Wheel((i+j) & 255) && b >> 7);
-        strip.setPixelColor(i-1, Wheel((i+j) & 255) && b >> 6);
-        strip.setPixelColor(i-1, Wheel((i+j) & 255) && b >> 5);
-      }
-    }
-    strip.show();
-    delay(wait);
+  // we can read another byte
+  if (Serial.available() > 0) {
+    incoming_byte.value = Serial.read();
+    incoming_byte.set = true;
   }
 
 }
 
-void pixelRun(uint8_t wait) {
-  uint16_t i, j;
+uint8_t bufferDiff(uint8_t start, uint8_t end) {
+  if ( start > end ) {
+    return end + MAX_BUFFER - start;
+  } else {
+    return end - start;
+  }
+}
 
-  for(j=0; j<strip.numPixels(); j++) {
-    for(i=0; i<strip.numPixels(); i++) {
-      if ( i == j ) {
-        strip.setPixelColor(i, Wheel((i+j) & 255));
+bool shift_buffer_bytes = false;
+struct unsettableByte blank_byte = { false, 0 };
+
+void updateStripBytes(bool set, uint8_t value) {
+  first_byte_buffer_pos++;
+  first_byte_buffer_pos %= MAX_BUFFER;
+  strip_bytes[first_byte_buffer_pos].set = set;
+  strip_bytes[first_byte_buffer_pos].value = value;
+}
+
+bool byteNeededOnStrip() {
+  return true; // TODO: how do we know that we need a new byte?
+}
+
+bool timeToRefreshStrip() {
+  long now = millis();
+  if ( now - last_strip_update_millis > ms_per_pixel_move ) {
+    last_strip_update_millis = now;
+    return true;
+  } else {
+    return false;
+  }
+}
+
+uint8_t bit_offset = 0;
+
+void updateStrip() {
+  // 'first' byte is coming onto strip
+  // 'last' byte is exiting strip
+  // at bit_offset == 0, first byte is entirely off strip,
+  //                     last byte is potentially leaving it.
+  // at bit_offset == 1, MSB first bit of first byte enters strip
+  //
+  // each 'byte' is 11 pixels: 8 pixels data, 3 pixels trailing blank
+  for (uint16_t i=strip.numPixels()-1; i>=0; i--) {
+    // REVELATION: We only need to know what the first pixel should be!
+    //  - rest just shift along with getPixelColor()
+    //  - but we need to set in reverse.
+    // calculate which bit to set
+    //  - 11 pixels per byte
+    //    so at offset:
+    //     0: i==0 => blank
+    //     1: i==0 => bitRead(value, 7)
+    //     2: i==0 => bitRead(value, 6)
+    //     3: i==0 => bitRead(value, 5)
+    //     4: i==0 => bitRead(value, 4)
+    //     5: i==0 => bitRead(value, 3)
+    //     6: i==0 => bitRead(value, 2)
+    //     7: i==0 => bitRead(value, 1)
+    //     8: i==0 => bitRead(value, 0)
+    //     9: i==0 => blank
+    //    10: i==0 => blank
+    uint8_t val = strip_bytes[first_byte_buffer_pos].value;
+    if ( i == 0 ) {
+      if ( bit_offset == 0 || bit_offset == 9 || bit_offset == 10 ) {
+        strip.setPixelColor(i, 0); // blank
       } else {
-        strip.setPixelColor(i, 0);
+        uint8_t bit_to_read = (8 - offset);
+        if ( strip_bytes[first_byte_buffer_pos].set ) {
+          strip.setPixelColor(i, colours[bitRead(val, bit_to_read)]);
+        } else {
+          strip.setPixelColor(i, 0);
+        }
       }
+    } else {
+      strip.setPixelColor(i, strip.getPixelColor(i-1)); // hopefully not slow :/
     }
-    strip.show();
-    delay(wait);
+
   }
 }
 
-void rainbow(uint8_t wait) {
-  uint16_t i, j;
-
-  for(j=0; j<256; j++) {
-    for(i=0; i<strip.numPixels(); i++) {
-      strip.setPixelColor(i, Wheel((i+j) & 255));
-    }
-    strip.show();
-    delay(wait);
-  }
-}
-
-// Slightly different, this makes the rainbow equally distributed throughout
-void rainbowCycle(uint8_t wait) {
-  uint16_t i, j;
-
-  for(j=0; j<256*5; j++) { // 5 cycles of all colors on wheel
-    for(i=0; i< strip.numPixels(); i++) {
-      strip.setPixelColor(i, Wheel(((i * 256 / strip.numPixels()) + j) & 255));
-    }
-    strip.show();
-    delay(wait);
-  }
-}
-
-//Theatre-style crawling lights.
-void theaterChase(uint32_t c, uint8_t wait) {
-  for (int j=0; j<10; j++) {  //do 10 cycles of chasing
-    for (int q=0; q < 3; q++) {
-      for (int i=0; i < strip.numPixels(); i=i+3) {
-        strip.setPixelColor(i+q, c);    //turn every third pixel on
-      }
-      strip.show();
-
-      delay(wait);
-
-      for (int i=0; i < strip.numPixels(); i=i+3) {
-        strip.setPixelColor(i+q, 0);        //turn every third pixel off
-      }
+void loop() {
+  populateNextByte();
+  if ( byteNeededOnStrip() ) {
+    if ( incoming_byte.set ) {
+      updateStripBytes(true, incoming_byte.value);
+      incoming_byte.set = false;
+    } else {
+      updateStripBytes(false, 0);
     }
   }
+  if ( timeToRefreshStrip() ) {
+    updateStrip();
+  }
+
 }
 
-//Theatre-style crawling lights with rainbow effect
-void theaterChaseRainbow(uint8_t wait) {
-  for (int j=0; j < 256; j++) {     // cycle all 256 colors in the wheel
-    for (int q=0; q < 3; q++) {
-      for (int i=0; i < strip.numPixels(); i=i+3) {
-        strip.setPixelColor(i+q, Wheel( (i+j) % 255));    //turn every third pixel on
-      }
-      strip.show();
-
-      delay(wait);
-
-      for (int i=0; i < strip.numPixels(); i=i+3) {
-        strip.setPixelColor(i+q, 0);        //turn every third pixel off
-      }
-    }
-  }
-}
-
-// Input a value 0 to 255 to get a color value.
-// The colours are a transition r - g - b - back to r.
-uint32_t Wheel(byte WheelPos) {
-  WheelPos = 255 - WheelPos;
-  if(WheelPos < 85) {
-    return strip.Color(255 - WheelPos * 3, 0, WheelPos * 3);
-  }
-  if(WheelPos < 170) {
-    WheelPos -= 85;
-    return strip.Color(0, WheelPos * 3, 255 - WheelPos * 3);
-  }
-  WheelPos -= 170;
-  return strip.Color(WheelPos * 3, 255 - WheelPos * 3, 0);
-}
