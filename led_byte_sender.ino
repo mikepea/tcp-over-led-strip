@@ -44,17 +44,38 @@ Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUM_PIXELS, PIN, NEO_GRB + NEO_KHZ80
 //  * HDLC/PPP bit-stuffed packets? -- 111110 in data stream
 //
 
-#define TWO_BITS_PER_PIXEL 1
-//#define FOUR_BITS_PER_PIXEL 1
-#define BAUD_RATE 1200
-#define STRIP_LATENCY_MS 2000
+//#define TWO_BITS_PER_PIXEL 1
+#define FOUR_BITS_PER_PIXEL 1
+#define BAUD_RATE 300
 #define MAX_BUFFER 120
+#define STRIP_SPEED_MULTIPLE 1
 
 #ifdef TWO_BITS_PER_PIXEL
-uint32_t colours[2] = { strip.Color(0, 0, 0xff), strip.Color(0xff, 0xff, 0x00) };
+const uint8_t MAX_PIXEL_OFFSET = 11;
+const int ms_per_pixel_move = STRIP_SPEED_MULTIPLE * 1000 / BAUD_RATE;
+uint32_t colours[2] = { strip.Color(0, 0, 0x22), strip.Color(0xdd, 0xdd, 0x00) };
 #endif
 #ifdef FOUR_BITS_PER_PIXEL
-uint32_t colours[16];
+const uint8_t MAX_PIXEL_OFFSET = 4;
+const int ms_per_pixel_move = STRIP_SPEED_MULTIPLE * 4 * 1000 / BAUD_RATE;
+uint32_t colours[16] = {
+  strip.Color(0x80,0x80,0x00), // 0x0: olive
+  strip.Color(0x00,0x80,0x00), // 0x1: dark green
+  strip.Color(0x80,0x00,0x00), // 0x2: maroon
+  strip.Color(0xa5,0x2a,0x2a), // 0x3: brown
+  strip.Color(0xff,0xa5,0x00), // 0x4: orange
+  strip.Color(0x80,0x00,0x80), // 0x5: purple
+  strip.Color(0x80,0x80,0x00), // 0x6:
+  strip.Color(0x00,0x80,0x80), // 0x7:
+  strip.Color(0x80,0x80,0x80), // 0x8: grey
+  strip.Color(0x00,0x00,0xff), // 0x9: bright blue
+  strip.Color(0xff,0x00,0x00), // 0xa: bright red
+  strip.Color(0x00,0xff,0x00), // 0xb: bright green
+  strip.Color(0xff,0x00,0xff), // 0xc: purple
+  strip.Color(0x00,0xff,0xff), // 0xd: cyan
+  strip.Color(0xff,0xff,0x00), // 0xe: yellow
+  strip.Color(0xff,0xff,0xff), // 0xf: white
+};
 #endif
 
 struct unsettableByte {
@@ -62,12 +83,11 @@ struct unsettableByte {
   uint8_t value;
 } incoming_byte;
 
-const int ms_per_pixel_move = STRIP_LATENCY_MS / NUM_PIXELS; // for 1s latency
 struct unsettableByte strip_bytes[MAX_BUFFER];
 uint8_t first_byte_buffer_pos = 0;
 uint8_t last_byte_buffer_pos = 0;
 
-uint8_t bit_offset = 0;
+uint8_t pixel_offset = 0;
 
 
 // INTERRUPT on OPTO PIN
@@ -84,6 +104,7 @@ void setup() {
 
 long last_byte_read_millis = 0;
 long last_strip_update_millis = 0;
+long loop_count = 0;
 
 void populateSerialBuffer() {
   // buffer has not been read
@@ -101,15 +122,6 @@ void populateSerialBuffer() {
 
 }
 
-uint8_t bufferDiff(uint8_t start, uint8_t end) {
-  if ( start > end ) {
-    return end + MAX_BUFFER - start;
-  } else {
-    return end - start;
-  }
-}
-
-bool shift_buffer_bytes = false;
 struct unsettableByte blank_byte = { false, 0 };
 
 void updateStripBytes(bool set, uint8_t value) {
@@ -120,7 +132,7 @@ void updateStripBytes(bool set, uint8_t value) {
 }
 
 bool byteNeededOnStrip() {
-  if ( bit_offset > 11 )
+  if ( pixel_offset > MAX_PIXEL_OFFSET )
     return true;
   else
     return false;
@@ -137,52 +149,43 @@ bool timeToRefreshStrip() {
 }
 
 void updateStrip() {
-  // 'first' byte is coming onto strip
-  // 'last' byte is exiting strip
-  // at bit_offset == 0, first byte is entirely off strip,
-  //                     last byte is potentially leaving it.
-  // at bit_offset == 1, MSB first bit of first byte enters strip
-  //
-  // each 'byte' is 11 pixels: 8 pixels data, 3 pixels trailing blank
   for (uint16_t i=strip.numPixels(); i>0; i--) {
     // REVELATION: We only need to know what the first pixel should be!
     //  - rest just shift along with getPixelColor()
-    //  - but we need to set in reverse.
-    // calculate which bit to set
-    //  - 11 pixels per byte
-    //    so at offset:
-    //     0: i==0 => blank
-    //     1: i==0 => bitRead(value, 7)
-    //     2: i==0 => bitRead(value, 6)
-    //     3: i==0 => bitRead(value, 5)
-    //     4: i==0 => bitRead(value, 4)
-    //     5: i==0 => bitRead(value, 3)
-    //     6: i==0 => bitRead(value, 2)
-    //     7: i==0 => bitRead(value, 1)
-    //     8: i==0 => bitRead(value, 0)
-    //     9: i==0 => blank
-    //    10: i==0 => blank
+    //  - but we need to set in reverse (pixel N..1)
+    bool byte_is_set = strip_bytes[first_byte_buffer_pos].set;
     uint8_t val = strip_bytes[first_byte_buffer_pos].value;
     if ( i-1 == 0 ) {
-      if ( bit_offset == 0 || bit_offset >= 9 ) {
+#ifdef TWO_BITS_PER_PIXEL
+      if ( pixel_offset == 0 || pixel_offset >= 9 ) {
         strip.setPixelColor(i-1, 0); // blank
       } else {
-        uint8_t bit_to_read = (8 - bit_offset);
+        uint8_t bit_to_read = (8 - pixel_offset);
         strip.setPixelColor(i-1, colours[1]);
-        if ( strip_bytes[first_byte_buffer_pos].set ) {
+        if ( byte_is_set ) {
           strip.setPixelColor(i-1, colours[bitRead(val, bit_to_read)]);
         } else {
           strip.setPixelColor(i-1, 0);
         }
       }
+#endif
+#ifdef FOUR_BITS_PER_PIXEL
+      if ( pixel_offset == 0 || pixel_offset >= 3 || ! byte_is_set ) {
+        strip.setPixelColor(i-1, 0); // blank
+      } else if ( pixel_offset == 1 ) {
+        uint8_t nibble = val >> 4; // most significant nibble
+        strip.setPixelColor(i-1, colours[nibble]);
+      } else if ( pixel_offset == 2 ) {
+        uint8_t nibble = val & 0x0f; // least significant nibble
+        strip.setPixelColor(i-1, colours[nibble]);
+      }
+#endif
     } else {
       strip.setPixelColor(i-1, strip.getPixelColor(i-2)); // hopefully not slow :/
     }
-    //Serial.print("i: "); Serial.println(i);
   }
   strip.show();
-  bit_offset++;
-  //Serial.print("bit_offset: "); Serial.println(bit_offset);
+  pixel_offset++;
 }
 
 void loop() {
@@ -192,7 +195,7 @@ void loop() {
     if ( incoming_byte.set ) {
       updateStripBytes(true, incoming_byte.value);
       incoming_byte.set = false;
-      bit_offset=0; // TODO uuurm
+      pixel_offset=0; // we have a new byte to display
     } else {
       updateStripBytes(false, 0);
     }
@@ -200,8 +203,12 @@ void loop() {
   if ( timeToRefreshStrip() ) {
     updateStrip();
   }
+  if ( loop_count == 100000 ) {
+    Serial.println("loop");
+    loop_count = 0;
+  }
+  loop_count++;
   //Serial.print("millis: "); Serial.println(millis());
   //Serial.println("LoopEnd");
-
 }
 
