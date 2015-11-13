@@ -4,7 +4,7 @@
 #endif
 
 #define PIN 6
-#define NUM_PIXELS 120
+#define NUM_PIXELS 60
 
 // Parameter 1 = number of pixels in strip
 // Parameter 2 = Arduino pin number (most are valid)
@@ -47,8 +47,8 @@ Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUM_PIXELS, PIN, NEO_GRB + NEO_KHZ80
 //#define TWO_BITS_PER_PIXEL 1
 #define FOUR_BITS_PER_PIXEL 1
 #define BAUD_RATE 300
-#define MAX_BUFFER 120
-#define STRIP_SPEED_MULTIPLE 1
+#define MAX_BUFFER 100
+#define STRIP_SPEED_MULTIPLE 4
 
 #ifdef TWO_BITS_PER_PIXEL
 const uint8_t MAX_PIXEL_OFFSET = 11;
@@ -78,14 +78,16 @@ uint32_t colours[16] = {
 };
 #endif
 
+const uint16_t STRIP_LENGTH_IN_BYTES = 1;
+
 struct unsettableByte {
   bool set;
   uint8_t value;
 } incoming_byte;
 
 struct unsettableByte strip_bytes[MAX_BUFFER];
-uint8_t first_byte_buffer_pos = 0;
-uint8_t last_byte_buffer_pos = 0;
+uint16_t first_byte_buffer_pos = 0;
+uint16_t last_byte_buffer_pos = 0;
 
 uint8_t pixel_offset = 0;
 
@@ -128,7 +130,9 @@ void updateStripBytes(bool set, uint8_t value) {
   first_byte_buffer_pos++;
   first_byte_buffer_pos %= MAX_BUFFER;
   strip_bytes[first_byte_buffer_pos].set = set;
-  strip_bytes[first_byte_buffer_pos].value = value;
+  if ( set ) {
+    strip_bytes[first_byte_buffer_pos].value = value;
+  }
 }
 
 bool byteNeededOnStrip() {
@@ -188,6 +192,35 @@ void updateStrip() {
   pixel_offset++;
 }
 
+void sendFallingByteAsSerial() {
+  // send the 'falling off' byte out via Serial
+  uint16_t falling_byte_buffer_pos;
+  if ( first_byte_buffer_pos < STRIP_LENGTH_IN_BYTES ) {
+    falling_byte_buffer_pos = MAX_BUFFER + first_byte_buffer_pos - STRIP_LENGTH_IN_BYTES;
+  } else {
+    falling_byte_buffer_pos = first_byte_buffer_pos - STRIP_LENGTH_IN_BYTES;
+  }
+  /*
+  Serial.print(first_byte_buffer_pos);
+  Serial.print("/");
+  Serial.write(strip_bytes[first_byte_buffer_pos].value);
+  Serial.print(" -- ");
+  Serial.print(falling_byte_buffer_pos);
+  Serial.print("/ ");
+  Serial.write(strip_bytes[falling_byte_buffer_pos].value);
+  Serial.println();
+  */
+  bool falling_byte_set = strip_bytes[falling_byte_buffer_pos].set;
+  uint8_t falling_byte_value = strip_bytes[falling_byte_buffer_pos].value;
+  if ( falling_byte_set ) {
+    Serial.write(falling_byte_value);
+  } else {
+    //Serial.write('*');
+    //Serial.print("unset");
+  }
+  //Serial.println("");
+}
+
 void loop() {
   //Serial.println("LoopStart");
   populateSerialBuffer();
@@ -199,12 +232,12 @@ void loop() {
     } else {
       updateStripBytes(false, 0);
     }
+    sendFallingByteAsSerial();
   }
   if ( timeToRefreshStrip() ) {
     updateStrip();
   }
   if ( loop_count == 100000 ) {
-    Serial.println("loop");
     loop_count = 0;
   }
   loop_count++;
