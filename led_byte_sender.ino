@@ -4,7 +4,7 @@
 #endif
 
 #define PIN 6
-#define NUM_PIXELS 60
+#define NUM_PIXELS 240
 
 // Parameter 1 = number of pixels in strip
 // Parameter 2 = Arduino pin number (most are valid)
@@ -45,10 +45,11 @@ Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUM_PIXELS, PIN, NEO_GRB + NEO_KHZ80
 //
 
 //#define TWO_BITS_PER_PIXEL 1
-#define FOUR_BITS_PER_PIXEL 1
+//#define FOUR_BITS_PER_PIXEL 1
+#define EIGHT_BITS_PER_PIXEL 1
 #define BAUD_RATE 300
 #define MAX_BUFFER 100
-#define STRIP_SPEED_MULTIPLE 4
+#define STRIP_SPEED_MULTIPLE 1
 
 #ifdef TWO_BITS_PER_PIXEL
 const uint8_t MAX_PIXEL_OFFSET = 11;
@@ -56,7 +57,7 @@ const int ms_per_pixel_move = STRIP_SPEED_MULTIPLE * 1000 / BAUD_RATE;
 uint32_t colours[2] = { strip.Color(0, 0, 0x22), strip.Color(0xdd, 0xdd, 0x00) };
 #endif
 #ifdef FOUR_BITS_PER_PIXEL
-const uint8_t MAX_PIXEL_OFFSET = 4;
+const uint8_t MAX_PIXEL_OFFSET = 2;
 const int ms_per_pixel_move = STRIP_SPEED_MULTIPLE * 4 * 1000 / BAUD_RATE;
 uint32_t colours[16] = {
   strip.Color(0x80,0x80,0x00), // 0x0: olive
@@ -77,8 +78,12 @@ uint32_t colours[16] = {
   strip.Color(0xff,0xff,0xff), // 0xf: white
 };
 #endif
+#ifdef EIGHT_BITS_PER_PIXEL
+const uint8_t MAX_PIXEL_OFFSET = 1;
+const int ms_per_pixel_move = STRIP_SPEED_MULTIPLE * 8 * 1000 / BAUD_RATE;
+#endif
 
-const uint16_t STRIP_LENGTH_IN_BYTES = 1;
+const uint16_t STRIP_LENGTH_IN_BYTES = 0;
 
 struct unsettableByte {
   bool set;
@@ -152,6 +157,18 @@ bool timeToRefreshStrip() {
   }
 }
 
+uint32_t convertByteToColor(uint8_t a) {
+  uint8_t r,g,b;
+  if ( a == 0 ) {
+    r = 2; g = 0; b = 0;
+  } else {
+    r = ( a & 0b11110000 );
+    g = ( a & 0b00111100 ) << 2;
+    b = ( a & 0b00001111 ) << 4;
+  }
+  return strip.Color(r,g,b);
+}
+
 void updateStrip() {
   for (uint16_t i=strip.numPixels(); i>0; i--) {
     // REVELATION: We only need to know what the first pixel should be!
@@ -174,14 +191,21 @@ void updateStrip() {
       }
 #endif
 #ifdef FOUR_BITS_PER_PIXEL
-      if ( pixel_offset == 0 || pixel_offset >= 3 || ! byte_is_set ) {
+      if ( pixel_offset >= 2 || ! byte_is_set ) {
         strip.setPixelColor(i-1, 0); // blank
-      } else if ( pixel_offset == 1 ) {
+      } else if ( pixel_offset == 0 ) {
         uint8_t nibble = val >> 4; // most significant nibble
         strip.setPixelColor(i-1, colours[nibble]);
-      } else if ( pixel_offset == 2 ) {
+      } else if ( pixel_offset == 1 ) {
         uint8_t nibble = val & 0x0f; // least significant nibble
         strip.setPixelColor(i-1, colours[nibble]);
+      }
+#endif
+#ifdef EIGHT_BITS_PER_PIXEL
+      if ( pixel_offset == 0 && byte_is_set ) {
+        strip.setPixelColor(i-1, convertByteToColor(val));
+      } else {
+        strip.setPixelColor(i-1, 0); // blank
       }
 #endif
     } else {
