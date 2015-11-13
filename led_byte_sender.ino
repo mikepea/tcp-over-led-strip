@@ -45,10 +45,10 @@ Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUM_PIXELS, PIN, NEO_GRB + NEO_KHZ80
 //
 
 //#define TWO_BITS_PER_PIXEL 1
-//#define FOUR_BITS_PER_PIXEL 1
-#define EIGHT_BITS_PER_PIXEL 1
+#define FOUR_BITS_PER_PIXEL 1
+//#define EIGHT_BITS_PER_PIXEL 1
 #define BAUD_RATE 300
-#define MAX_BUFFER 100
+#define MAX_BUFFER 200
 #define STRIP_SPEED_MULTIPLE 1
 
 #ifdef TWO_BITS_PER_PIXEL
@@ -58,17 +58,17 @@ uint32_t colours[2] = { strip.Color(0, 0, 0x22), strip.Color(0xdd, 0xdd, 0x00) }
 #endif
 #ifdef FOUR_BITS_PER_PIXEL
 const uint8_t MAX_PIXEL_OFFSET = 2;
-const int ms_per_pixel_move = STRIP_SPEED_MULTIPLE * 4 * 1000 / BAUD_RATE;
+const int ms_per_pixel_move = STRIP_SPEED_MULTIPLE * 1 * 1000 / BAUD_RATE;
 uint32_t colours[16] = {
-  strip.Color(0x80,0x80,0x00), // 0x0: olive
-  strip.Color(0x00,0x80,0x00), // 0x1: dark green
-  strip.Color(0x80,0x00,0x00), // 0x2: maroon
+  strip.Color(0x80,0x40,0x00), // 0x0: light yellow
+  strip.Color(0x00,0x40,0x00), // 0x1: dark green
+  strip.Color(0x80,0x00,0x20), // 0x2: maroon
   strip.Color(0xa5,0x2a,0x2a), // 0x3: brown
   strip.Color(0xff,0xa5,0x00), // 0x4: orange
   strip.Color(0x80,0x00,0x80), // 0x5: purple
-  strip.Color(0x80,0x80,0x00), // 0x6:
-  strip.Color(0x00,0x80,0x80), // 0x7:
-  strip.Color(0x80,0x80,0x80), // 0x8: grey
+  strip.Color(0x60,0x60,0x00), // 0x6:
+  strip.Color(0x00,0x60,0xa0), // 0x7:
+  strip.Color(0x40,0x40,0x40), // 0x8: grey
   strip.Color(0x00,0x00,0xff), // 0x9: bright blue
   strip.Color(0xff,0x00,0x00), // 0xa: bright red
   strip.Color(0x00,0xff,0x00), // 0xb: bright green
@@ -80,10 +80,10 @@ uint32_t colours[16] = {
 #endif
 #ifdef EIGHT_BITS_PER_PIXEL
 const uint8_t MAX_PIXEL_OFFSET = 1;
-const int ms_per_pixel_move = STRIP_SPEED_MULTIPLE * 8 * 1000 / BAUD_RATE;
+const int ms_per_pixel_move = STRIP_SPEED_MULTIPLE * 2 * 1000 / BAUD_RATE;
 #endif
 
-const uint16_t STRIP_LENGTH_IN_BYTES = 0;
+const uint16_t STRIP_LENGTH_IN_BYTES = 150;
 
 struct unsettableByte {
   bool set;
